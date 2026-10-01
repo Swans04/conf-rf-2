@@ -1,3 +1,4 @@
+let pendingEquipment = [];   /* выбранное оборудование в форме бронирования */
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-action]');
   if (!el) return;
@@ -7,13 +8,94 @@ document.addEventListener('click', e => {
     case 'nav':            go(el.dataset.page); break;
     case 'open-login':     closeModal(); openLogin(); break;
     case 'open-register':  closeModal(); openRegister(); break;
+    case 'open-forgot':    closeModal(); openForgotPassword(); break;
+    case 'open-change-pwd': closeModal(); openChangePassword(); break;
     case 'close-modal':    closeModal(); break;
     case 'close-modal-bg': if (e.target === el) closeModal(); break;
+        /* --- Оборудование --- */
+    case 'add-equipment':  openEquipmentForm(null); break;
+    case 'edit-equipment': openEquipmentForm(getEquipment(el.dataset.id)); break;
+
+    case 'del-equipment': {
+      const eq = getEquipment(el.dataset.id);
+      if (!eq) break;
+      const used = db.bookingEquipment.filter(x => x.equipment_id === eq.id).length;
+      if (used) { toast(`Нельзя удалить: оборудование используется в ${used} заявках`, 'err'); break; }
+      if (!confirm(`Удалить «${eq.name}»?`)) break;
+      db.equipment = db.equipment.filter(x => x.id !== eq.id);
+      saveDB(); renderAll();
+      toast('Оборудование удалено', 'ok');
+      break;
+    }
+
+    case 'add-pending-equipment': {
+      const sel = document.getElementById('pickEquipment');
+      const qty = document.getElementById('pickQty');
+      if (!sel || !qty) break;
+      const eqId = +sel.value;
+      const q = +qty.value;
+      if (!eqId) { toast('Выберите оборудование', 'err'); break; }
+      if (!Number.isInteger(q) || q <= 0) { toast('Количество — целое положительное', 'err'); break; }
+
+      const dateStr = ($('#bDate') && $('#bDate').value) || '';
+      const d = parseDateInput(dateStr);
+      if (!d) { toast('Сначала укажите корректную дату', 'err'); break; }
+      const isoDT = d.toISOString();
+
+      const avail = equipmentAvailableForForm(eqId, isoDT, null, pendingEquipment);
+      if (q > avail) { toast(`Доступно только ${avail} шт. на это время`, 'err'); break; }
+
+      /* Если уже такое оборудование есть — увеличиваем количество */
+      const existing = pendingEquipment.find(p => p.equipment_id === eqId);
+      if (existing) {
+        if (existing.quantity + q > avail + existing.quantity) {
+          toast(`Доступно только ${avail + existing.quantity} шт.`, 'err');
+          break;
+        }
+        existing.quantity += q;
+      } else {
+        pendingEquipment.push({ equipment_id: eqId, quantity: q });
+      }
+
+      sel.value = '';
+      qty.value = 1;
+      renderPendingEquipment();
+      break;
+    }
+
+    case 'remove-pending-equipment': {
+      const idx = +el.dataset.idx;
+      pendingEquipment.splice(idx, 1);
+      renderPendingEquipment();
+      break;
+    }
+
+    case 'export-equipment': {
+      const rows = [['ID','Заявка','Оборудование','Количество','Статус','Дата заявки']];
+      db.bookingEquipment.forEach(be => {
+        const b = getBooking(be.booking_id);
+        const e = getEquipment(be.equipment_id);
+        rows.push([be.id, be.booking_id, e ? e.name : '—', be.quantity, be.status,
+                   b ? fmtDT(b.start_datetime) : '—']);
+      });
+      const csv = rows.map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(';')).join('\r\n');
+      const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'Оборудование_' + new Date().toISOString().slice(0,10) + '.csv';
+      a.click();
+      toast('Отчёт по оборудованию выгружен', 'ok');
+      break;
+    }
 
     case 'logout': {
+      if (currentUser()) {
+        logSecurity('logout', { login: currentUser().login });
+      }
       session = null;
       localStorage.removeItem(LS_SES);
       ADMIN_ONLY_PAGES_RESET();
+      stopIdleWatch();
       toast('Вы вышли из системы');
       if (currentPage === 'admin' || currentPage === 'er' || currentPage === 'messages') go('home');
       else { renderNav(); renderAll(); }
@@ -37,7 +119,6 @@ document.addEventListener('click', e => {
     case 'add-room':     openRoomForm(null); break;
     case 'edit-room':    openRoomForm(getRoom(el.dataset.id)); break;
 
-    /* --- Сообщения --- */
     case 'open-email': {
       openEmail(el.dataset.id);
       renderNav();
@@ -98,11 +179,11 @@ document.addEventListener('click', e => {
       mySort.column = null; mySort.dir = 'asc';
       adminSort.column = null; adminSort.dir = 'asc';
       ADMIN_ONLY_PAGES_RESET();
+      stopIdleWatch();
       go('home');
       toast('Демо-данные восстановлены', 'ok');
       break;
 
-    /* --- Календарь --- */
     case 'cal-prev':  calPrev(); break;
     case 'cal-next':  calNext(); break;
     case 'cal-today': calToday(); break;
@@ -112,7 +193,6 @@ document.addEventListener('click', e => {
       break;
     }
 
-    /* --- Сортировки --- */
     case 'sort-my': {
       const col = el.dataset.col;
       if (mySort.column === col) mySort.dir = mySort.dir === 'asc' ? 'desc' : 'asc';
@@ -128,19 +208,15 @@ document.addEventListener('click', e => {
       break;
     }
 
-    /* --- Фильтр по датам --- */
     case 'reset-date-filter': {
-      myFilter.dateFrom = '';
-      myFilter.dateTo = '';
+      myFilter.dateFrom = ''; myFilter.dateTo = '';
       renderMy();
       break;
     }
 
-    /* --- Экспорт в Excel --- */
     case 'export-bookings': {
       const src = el.dataset.source;
       let list, name;
-
       if (src === 'my') {
         list = getMyFilteredBookings();
         name = 'Мои_заявки';
@@ -150,31 +226,23 @@ document.addEventListener('click', e => {
         else list.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
         name = 'Все_заявки';
       }
-
-      if (!list.length) {
-        toast('Нечего выгружать — список пуст', 'err');
-        break;
-      }
-
+      if (!list.length) { toast('Нечего выгружать — список пуст', 'err'); break; }
       const date = new Date().toISOString().slice(0, 10);
       if (typeof exportBookingsToCSV === 'function') {
         exportBookingsToCSV(list, `${name}_${date}.csv`);
         toast(`Выгружено заявок: ${list.length}`, 'ok');
       } else {
-        toast('Функция экспорта не найдена — проверьте utils.js', 'err');
+        toast('Функция экспорта не найдена', 'err');
       }
       break;
     }
 
-    /* --- Глобальный поиск --- */
     case 'gr-go': {
       const type = el.dataset.type;
-      const id   = +el.dataset.id;
       const box = document.getElementById('globalResults');
       const inp = document.getElementById('globalSearch');
       if (box) box.classList.remove('show');
       if (inp) inp.value = '';
-
       if (type === 'booking') {
         myFilter.search = ''; myFilter.status = 'Все';
         myFilter.dateFrom = ''; myFilter.dateTo = '';
@@ -215,11 +283,38 @@ document.addEventListener('change', e => {
     renderAll();
     return;
   }
+    if (el.dataset.action === 'set-equipment-status') {
+    const be = getBookingEquipment(el.dataset.id);
+    if (!be) return;
+    const old = be.status;
+    be.status = el.value;
 
+    /* Проверка конфликта: если подтверждаем — количество не должно превышать лимит */
+    if (be.status === 'подтверждено' || be.status === 'выдано') {
+      const b = getBooking(be.booking_id);
+      if (b) {
+        const used = equipmentBookedAtTime(be.equipment_id, b.start_datetime, be.booking_id)
+                   + be.quantity;
+        const eq = getEquipment(be.equipment_id);
+        if (eq && used > eq.total_quantity) {
+          be.status = old;
+          saveDB();
+          toast(`Конфликт: «${eq.name}» — нужно ${used} шт., всего ${eq.total_quantity}`, 'err');
+          renderAll();
+          return;
+        }
+      }
+    }
+
+    saveDB();
+    toast(`Запрос №${be.id}: «${old}» → «${be.status}»`, 'ok');
+    renderAll();
+  }
   if (el.dataset.action === 'cal-room') {
     calState.roomId = el.value ? +el.value : null;
     renderCalendarBlock();
   }
+
 });
 
 document.addEventListener('change', e => {
@@ -229,28 +324,35 @@ document.addEventListener('change', e => {
   }
 });
 
+/* Индикатор пароля + фильтры + глобальный поиск */
 document.addEventListener('input', e => {
   if (e.target.id === 'rPhone') e.target.value = maskPhone(e.target.value);
+    if (e.target.id === 'bDate') {
+    if (typeof renderPendingEquipment === 'function') renderPendingEquipment();
+  }
+  if (e.target.id === 'mySearch')    { myFilter.search = e.target.value; renderMyTable(); }
+  if (e.target.id === 'myDateFrom')  { myFilter.dateFrom = e.target.value; renderMyTable(); }
+  if (e.target.id === 'myDateTo')    { myFilter.dateTo = e.target.value; renderMyTable(); }
+  if (e.target.id === 'globalSearch'){ showGlobalResults(e.target.value); }
 
-  if (e.target.id === 'mySearch') {
-    myFilter.search = e.target.value;
-    renderMyTable();
-  }
-  if (e.target.id === 'myDateFrom') {
-    myFilter.dateFrom = e.target.value;
-    renderMyTable();
-  }
-  if (e.target.id === 'myDateTo') {
-    myFilter.dateTo = e.target.value;
-    renderMyTable();
-  }
-
-  if (e.target.id === 'globalSearch') {
-    showGlobalResults(e.target.value);
-  }
+  /* Обновление индикатора пароля */
+  ['rPass', 'pPass', 'cpNew'].forEach(id => {
+    if (e.target.id === id) updatePwdMeter(e.target.value, id);
+  });
 });
 
-/* Закрытие выпадающего списка глобального поиска при клике вне */
+function updatePwdMeter(pwd, inputId) {
+  const map = { rPass: ['rPassBar', 'rPassHint'], pPass: ['pPassBar', 'pPassHint'], cpNew: ['cpBar', 'cpHint'] };
+  const [barId, hintId] = map[inputId] || [];
+  const bar = document.getElementById(barId);
+  const hint = document.getElementById(hintId);
+  if (!bar || !hint) return;
+  const info = pwdStrengthInfo(pwd);
+  bar.style.width = info.width + '%';
+  bar.style.background = info.color;
+  hint.textContent = 'Надёжность пароля: ' + info.label;
+}
+
 document.addEventListener('click', e => {
   const box = document.getElementById('globalResults');
   const inp = document.getElementById('globalSearch');
@@ -258,18 +360,13 @@ document.addEventListener('click', e => {
   if (!box.contains(e.target) && e.target !== inp) box.classList.remove('show');
 });
 
-/* Функция отображения глобальных результатов */
 function showGlobalResults(text) {
   const box = document.getElementById('globalResults');
   if (!box) return;
-
   if (typeof queryGlobalSearch !== 'function') return;
-
   const list = queryGlobalSearch(text);
   if (!text.trim() || text.trim().length < 2) {
-    box.classList.remove('show');
-    box.innerHTML = '';
-    return;
+    box.classList.remove('show'); box.innerHTML = ''; return;
   }
   if (!list.length) {
     box.innerHTML = '<div class="gr-empty">Ничего не найдено</div>';
@@ -284,65 +381,199 @@ function showGlobalResults(text) {
   box.classList.add('show');
 }
 
-/* --- Отправка форм --- */
+/* ============================================================================
+   ОТПРАВКА ФОРМ
+   ============================================================================ */
 document.addEventListener('submit', e => {
   const form = e.target;
   e.preventDefault();
 
-  /* Авторизация */
+  /* ---------------- Авторизация ---------------- */
   if (form.id === 'loginForm') {
-    const login = $('#lLogin').value.trim();
-    const pass  = $('#lPass').value;
-    setField('fl-login', true); setField('fl-pass', true);
+    const login   = $('#lLogin').value.trim();
+    const pass    = $('#lPass').value;
+    const captcha = $('#lCaptcha').value.trim();
+    setField('fl-login', true); setField('fl-pass', true); setField('fl-captcha', true);
+
     if (!login) return setField('fl-login', false, 'Введите логин');
     if (!pass)  return setField('fl-pass',  false, 'Введите пароль');
 
-    const u = db.users.find(x => x.login.toLowerCase() === login.toLowerCase());
-    if (!u) return setField('fl-login', false, 'Пользователь с таким логином не найден');
-    if (u.password !== hashPwd(pass)) return setField('fl-pass', false, 'Неверный пароль');
+    /* Блокировка */
+    const block = isLoginBlocked(login);
+    if (block) {
+      const sec = Math.ceil((block.blocked_until - Date.now()) / 1000);
+      const min = Math.floor(sec / 60);
+      const s   = sec % 60;
+      return setField('fl-login', false,
+        `Слишком много попыток. Повторите через ${min} мин ${s} сек`);
+    }
 
+    /* CAPTCHA */
+    if (+captcha !== +form.dataset.captcha) {
+      logSecurity('login_fail', { login, reason: 'captcha' });
+      return setField('fl-captcha', false, 'Неверный ответ. Попробуйте снова.');
+    }
+
+    /* Проверка логина/пароля */
+    const u = db.users.find(x => x.login.toLowerCase() === login.toLowerCase());
+    if (!u || u.password !== hashPwd(pass)) {
+      const a = incLoginAttempt(login);
+      logSecurity('login_fail', { login, attempts: a.attempts });
+      if (a.blocked_until) {
+        const sec = Math.ceil((a.blocked_until - Date.now()) / 1000);
+        const min = Math.floor(sec / 60);
+        logSecurity('login_blocked', { login, minutes: min });
+        return setField('fl-login', false,
+          `Аккаунт заблокирован на ${min} мин — превышено ${MAX_LOGIN_ATTEMPTS} попыток`);
+      }
+      const left = MAX_LOGIN_ATTEMPTS - a.attempts;
+      return setField('fl-login', false,
+        `Неверный логин или пароль. Осталось попыток: ${left}`);
+    }
+
+    /* Успех */
+    resetLoginAttempt(login);
     session = u.id;
     localStorage.setItem(LS_SES, String(u.id));
+    logSecurity('login_success', { login: u.login });
     closeModal();
     if (u.is_admin && typeof loadAdminScript === 'function') loadAdminScript();
+    startIdleWatch();
     renderNav(); renderAll();
     toast(`Добро пожаловать, ${u.full_name.split(' ')[1] || u.login}!`, 'ok');
     return;
   }
 
-  /* Регистрация */
+  /* ---------------- Регистрация ---------------- */
   if (form.id === 'registerForm') {
     const data = {
       login:     $('#rLogin').value.trim(),
       password:  $('#rPass').value,
+      password2: $('#rPass2').value,
       full_name: $('#rName').value.trim(),
       phone:     $('#rPhone').value.trim(),
-      email:     $('#rEmail').value.trim()
+      email:     $('#rEmail').value.trim(),
+      question:  $('#rQ').value,
+      answer:    $('#rA').value.trim()
     };
-    ['login','password','full_name','phone','email'].forEach(k => setField('fr-' + k, true));
+    ['login','password','password2','full_name','phone','email','q','a']
+      .forEach(k => setField('fr-' + k, true));
 
     let ok = true;
     for (const k of ['login','password','full_name','phone','email']) {
       const res = V[k](data[k]);
       if (res !== true) { setField('fr-' + k, false, res); ok = false; }
     }
+    if (data.password !== data.password2) {
+      setField('fr-password2', false, 'Пароли не совпадают'); ok = false;
+    }
+    if (pwdStrength(data.password) < 2) {
+      setField('fr-password', false, 'Слишком слабый пароль — добавьте заглавные, цифры или символы');
+      ok = false;
+    }
+    if (data.answer.length < 2) {
+      setField('fr-a', false, 'Ответ должен быть не короче 2 символов'); ok = false;
+    }
     if (!ok) return;
+
     if (db.users.some(u => u.login.toLowerCase() === data.login.toLowerCase()))
       return setField('fr-login', false, 'Такой логин уже занят');
     if (db.users.some(u => u.email.toLowerCase() === data.email.toLowerCase()))
       return setField('fr-email', false, 'Такой e-mail уже зарегистрирован');
 
     const u = createUser({ ...data, is_admin: false });
+    setSecurityQuestion(u.id, data.question, data.answer);
     saveDB();
+
     session = u.id;
     localStorage.setItem(LS_SES, String(u.id));
+    logSecurity('register', { login: u.login });
     closeModal();
+    startIdleWatch();
     renderNav(); renderAll();
     toast('Пользователь создан. Добро пожаловать!', 'ok');
     return;
   }
 
-  /* Отзыв */
+  /* ---------------- Восстановление: шаг 1 — логин ---------------- */
+  if (form.id === 'forgotForm') {
+    const login = $('#fLogin').value.trim();
+    setField('ff-login', true);
+    if (!login) return setField('ff-login', false, 'Введите логин');
+
+    const u = db.users.find(x => x.login.toLowerCase() === login.toLowerCase());
+    if (!u) return setField('ff-login', false, 'Пользователь с таким логином не найден');
+
+    const q = getSecurityQuestion(u.id);
+    if (!q) return setField('ff-login', false,
+      'У этого пользователя не задан контрольный вопрос. Обратитесь к администратору.');
+
+    openAnswerQuestion(u.id, q.question);
+    return;
+  }
+
+  /* ---------------- Восстановление: шаг 2 — ответ ---------------- */
+  if (form.id === 'answerForm') {
+    const userId = +form.dataset.user;
+    const answer = $('#aAnswer').value.trim();
+    setField('fa-answer', true);
+    if (!answer) return setField('fa-answer', false, 'Введите ответ');
+
+    if (!checkSecurityAnswer(userId, answer)) {
+      const u = getUser(userId);
+      logSecurity('password_reset_fail', { login: u ? u.login : null, reason: 'wrong_answer' });
+      return setField('fa-answer', false, 'Неверный ответ');
+    }
+
+    openResetPassword(userId);
+    return;
+  }
+
+  /* ---------------- Восстановление: шаг 3 — новый пароль ---------------- */
+  if (form.id === 'resetForm') {
+    const userId = +form.dataset.user;
+    const pass1  = $('#pPass').value;
+    const pass2  = $('#pPass2').value;
+    setField('fp-pass', true); setField('fp-pass2', true);
+
+    if (V.password(pass1) !== true) return setField('fp-pass', false, V.password(pass1));
+    if (pwdStrength(pass1) < 2)
+      return setField('fp-pass', false, 'Слишком слабый пароль');
+    if (pass1 !== pass2) return setField('fp-pass2', false, 'Пароли не совпадают');
+
+    setUserPassword(userId, pass1);
+    const u = getUser(userId);
+    logSecurity('password_reset', { login: u ? u.login : null });
+    resetLoginAttempt(u ? u.login : '');
+    closeModal();
+    toast('Пароль успешно изменён. Войдите с новым паролем.', 'ok');
+    openLogin();
+    return;
+  }
+
+  /* ---------------- Смена пароля в ЛК ---------------- */
+  if (form.id === 'changePwdForm') {
+    const u = currentUser();
+    if (!u) return;
+    const oldP = $('#cpOld').value;
+    const newP = $('#cpNew').value;
+    const newP2= $('#cpNew2').value;
+    setField('cp-old', true); setField('cp-new', true); setField('cp-new2', true);
+
+    if (u.password !== hashPwd(oldP))
+      return setField('cp-old', false, 'Неверный текущий пароль');
+    if (V.password(newP) !== true) return setField('cp-new', false, V.password(newP));
+    if (pwdStrength(newP) < 2) return setField('cp-new', false, 'Слишком слабый пароль');
+    if (newP !== newP2) return setField('cp-new2', false, 'Пароли не совпадают');
+
+    setUserPassword(u.id, newP);
+    logSecurity('password_change', { login: u.login });
+    closeModal();
+    toast('Пароль успешно изменён.', 'ok');
+    return;
+  }
+
+  /* ---------------- Отзыв ---------------- */
   if (form.id === 'reviewForm') {
     const bid = +form.dataset.booking;
     const rating = $('#vRating').value;
@@ -366,7 +597,7 @@ document.addEventListener('submit', e => {
     return;
   }
 
-  /* Помещение */
+  /* ---------------- Помещение ---------------- */
   if (form.id === 'roomForm') {
     const name = $('#mName').value.trim();
     const cap  = $('#mCap').value;
@@ -392,8 +623,34 @@ document.addEventListener('submit', e => {
     saveDB(); closeModal(); renderAll();
     return;
   }
+    /* --- Оборудование --- */
+  if (form.id === 'equipmentForm') {
+    const name = $('#eName').value.trim();
+    const qty  = $('#eQty').value;
+    const desc = $('#eDesc').value.trim();
+    setField('fe-name', true); setField('fe-qty', true);
 
-  /* Бронирование */
+    let ok = true;
+    if (name.length < 2) { setField('fe-name', false, 'Название — не менее 2 символов'); ok = false; }
+    if (!Number.isInteger(+qty) || +qty <= 0) { setField('fe-qty', false, 'Целое положительное число'); ok = false; }
+    if (!ok) return;
+
+    const editId = form.dataset.id ? +form.dataset.id : null;
+    const dup = db.equipment.find(x => x.name.toLowerCase() === name.toLowerCase() && x.id !== editId);
+    if (dup) return setField('fe-name', false, 'Оборудование с таким названием уже есть');
+
+    if (editId) {
+      const e = getEquipment(editId);
+      e.name = name; e.total_quantity = +qty; e.description = desc;
+      toast('Оборудование обновлено', 'ok');
+    } else {
+      createEquipment({ name, total_quantity: +qty, description: desc });
+      toast('Оборудование добавлено', 'ok');
+    }
+    saveDB(); closeModal(); renderAll();
+    return;
+  }
+   /* ---------------- Бронирование ---------------- */
   if (form.id === 'bookingForm') {
     const u = currentUser();
     if (!u) return toast('Требуется авторизация', 'err');
@@ -419,10 +676,40 @@ document.addEventListener('submit', e => {
 
     if (!['offline', 'sbr'].includes(pay)) return setField('f-pay', false, 'Недопустимый способ оплаты');
 
-    createBooking({
+    /* Проверяем оборудование ДО создания заявки — чтобы не пришлось откатывать */
+    const eqErrors = [];
+    if (Array.isArray(pendingEquipment)) {
+      pendingEquipment.forEach(p => {
+        const avail = equipmentAvailable(p.equipment_id, isoDT, null);
+        if (p.quantity > avail) {
+          const eq = getEquipment(p.equipment_id);
+          eqErrors.push(eq ? eq.name : ('#' + p.equipment_id));
+        }
+      });
+    }
+    if (eqErrors.length) {
+      return toast('Оборудование уже занято: ' + eqErrors.join(', '), 'err');
+    }
+
+    /* Создаём заявку */
+    const booking = createBooking({
       user_id: u.id, room_id: room.id, start_datetime: isoDT,
       payment_method: pay, status: 'Новая', created_at: nowISO()
     });
+
+    /* Привязываем оборудование к заявке */
+    if (Array.isArray(pendingEquipment) && pendingEquipment.length) {
+      pendingEquipment.forEach(p => {
+        createBookingEquipment({
+          booking_id: booking.id,
+          equipment_id: p.equipment_id,
+          quantity: p.quantity,
+          status: 'запрошено'
+        });
+      });
+      pendingEquipment = [];
+    }
+
     saveDB();
     toast('Заявка отправлена на рассмотрение администратору', 'ok');
     go('my');
@@ -437,6 +724,38 @@ function setField(id, valid, msg) {
   const err = f.querySelector('.err');
   if (err && msg) err.textContent = msg;
 }
+
+/* ============================================================================
+   АВТОЛОГАУТ ПО БЕЗДЕЙСТВИЮ
+   ============================================================================ */
+const IDLE_LIMIT_MS = 15 * 60 * 1000;   /* 15 минут */
+let _idleTimer = null;
+
+function startIdleWatch() {
+  stopIdleWatch();
+  if (!session) return;
+  _idleTimer = setTimeout(() => {
+    const u = currentUser();
+    if (u) logSecurity('idle_logout', { login: u.login });
+    session = null;
+    localStorage.removeItem(LS_SES);
+    ADMIN_ONLY_PAGES_RESET();
+    toast('Сессия истекла из-за неактивности', 'err');
+    go('home');
+  }, IDLE_LIMIT_MS);
+}
+
+function stopIdleWatch() {
+  if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null; }
+}
+
+function touchIdle() {
+  if (session) startIdleWatch();
+}
+
+['click','keydown','mousemove','touchstart','scroll'].forEach(evt => {
+  document.addEventListener(evt, touchIdle, { passive: true });
+});
 
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeModal();

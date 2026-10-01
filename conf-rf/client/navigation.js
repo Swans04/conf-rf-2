@@ -2,13 +2,14 @@
    НАВИГАЦИЯ (SPA)
    ============================================================================ */
 const PAGES = [
-  { id: 'home',     title: 'Главная' },
-  { id: 'rooms',    title: 'Помещения' },
-  { id: 'booking',  title: 'Бронирование' },
-  { id: 'my',       title: 'Мои заявки' },
-  { id: 'reviews',  title: 'Отзывы' },
-  { id: 'messages', title: 'Сообщения', authOnly: true },
-  { id: 'admin',    title: 'Панель администратора', adminOnly: true }
+  { id: 'home',      title: 'Главная' },
+  { id: 'rooms',     title: 'Помещения' },
+  { id: 'equipment', title: 'Оборудование' },
+  { id: 'booking',   title: 'Бронирование' },
+  { id: 'my',        title: 'Мои заявки' },
+  { id: 'reviews',   title: 'Отзывы' },
+  { id: 'messages',  title: 'Сообщения', authOnly: true },
+  { id: 'admin',     title: 'Панель администратора', adminOnly: true }
 ];
 
 let currentPage = 'home';
@@ -53,9 +54,10 @@ function renderNav() {
     })
     .join('');
 
-  $('#authArea').innerHTML = u
+   $('#authArea').innerHTML = u
     ? `<div class="who"><b>${esc(u.full_name)}</b>
          ${u.is_admin ? 'Администратор' : 'Пользователь'} · ${esc(u.login)}</div>
+       <button class="btn btn-light btn-sm" data-action="open-change-pwd">Пароль</button>
        <button class="btn btn-light btn-sm" data-action="logout">Выйти</button>`
     : `<button class="btn btn-light btn-sm" data-action="open-login">Вход</button>
        <button class="btn btn-light btn-sm" data-action="open-register">Регистрация</button>`;

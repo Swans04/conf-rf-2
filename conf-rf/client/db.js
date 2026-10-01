@@ -119,3 +119,170 @@ function setUserPassword(userId, newPlainPassword) {
   saveDB();
   return true;
 }
+/* ============================================================================
+   БЕЗОПАСНОСТЬ: попытки входа, журнал, контрольные вопросы
+   ============================================================================ */
+
+const MAX_LOGIN_ATTEMPTS = 5;
+const BLOCK_MINUTES      = 5;
+
+/* --- Попытки входа / блокировка --- */
+function getLoginAttempt(login) {
+  if (!Array.isArray(db.loginAttempts)) db.loginAttempts = [];
+  const key = String(login || '').toLowerCase();
+  return db.loginAttempts.find(a => a.login === key) || null;
+}
+
+function incLoginAttempt(login) {
+  if (!Array.isArray(db.loginAttempts)) db.loginAttempts = [];
+  const key = String(login || '').toLowerCase();
+  let a = db.loginAttempts.find(x => x.login === key);
+  if (!a) { a = { login: key, attempts: 0, blocked_until: null }; db.loginAttempts.push(a); }
+  a.attempts++;
+  if (a.attempts >= MAX_LOGIN_ATTEMPTS) {
+    a.blocked_until = Date.now() + BLOCK_MINUTES * 60 * 1000;
+  }
+  saveDB();
+  return a;
+}
+
+function resetLoginAttempt(login) {
+  if (!Array.isArray(db.loginAttempts)) return;
+  const key = String(login || '').toLowerCase();
+  db.loginAttempts = db.loginAttempts.filter(a => a.login !== key);
+  saveDB();
+}
+
+function isLoginBlocked(login) {
+  const a = getLoginAttempt(login);
+  if (!a || !a.blocked_until) return null;
+  if (Date.now() > a.blocked_until) { resetLoginAttempt(login); return null; }
+  return a;
+}
+
+/* --- Журнал безопасности --- */
+function logSecurity(event, details) {
+  if (!Array.isArray(db.securityLog)) db.securityLog = [];
+  if (!db.seq.securityLog) db.seq.securityLog = 0;
+  const u = currentUser();
+  db.securityLog.push({
+    id: ++db.seq.securityLog,
+    user_id: u ? u.id : null,
+    login: (details && details.login) || (u ? u.login : null),
+    event,
+    details: details || {},
+    created_at: nowISO()
+  });
+  if (db.securityLog.length > 500) db.securityLog = db.securityLog.slice(-500);
+  saveDB();
+}
+
+/* --- Контрольный вопрос --- */
+function setSecurityQuestion(userId, question, answer) {
+  if (!Array.isArray(db.securityQuestions)) db.securityQuestions = [];
+  if (!db.seq.securityQuestions) db.seq.securityQuestions = 0;
+  db.securityQuestions = db.securityQuestions.filter(q => q.user_id !== +userId);
+  db.securityQuestions.push({
+    id: ++db.seq.securityQuestions,
+    user_id: +userId,
+    question,
+    answer_hash: hashPwd(answer.trim().toLowerCase())
+  });
+  saveDB();
+}
+
+function getSecurityQuestion(userId) {
+  if (!Array.isArray(db.securityQuestions)) return null;
+  return db.securityQuestions.find(q => q.user_id === +userId) || null;
+}
+
+function checkSecurityAnswer(userId, answer) {
+  const q = getSecurityQuestion(userId);
+  if (!q) return false;
+  return q.answer_hash === hashPwd(String(answer || '').trim().toLowerCase());
+}
+/* ============================================================================
+   ОБОРУДОВАНИЕ (Equipment + BookingEquipment)
+   ============================================================================ */
+
+const EQUIPMENT_STATUSES = ['запрошено','подтверждено','выдано','возвращено'];
+
+/* --- CRUD справочника --- */
+function createEquipment(d) {
+  const e = {
+    id: ++db.seq.equipment,
+    name: d.name,
+    total_quantity: +d.total_quantity,
+    description: d.description || ''
+  };
+  db.equipment.push(e);
+  return e;
+}
+
+const getEquipment = id => db.equipment.find(e => e.id === +id) || null;
+const findEquipmentByName = name => {
+  const n = String(name || '').trim().toLowerCase();
+  return db.equipment.find(e => e.name.toLowerCase() === n) || null;
+};
+
+/* --- Связь заявки и оборудования --- */
+function createBookingEquipment(d) {
+  const be = {
+    id: ++db.seq.bookingEquipment,
+    booking_id:   +d.booking_id,
+    equipment_id: +d.equipment_id,
+    quantity:     +d.quantity,
+    status:       d.status || 'запрошено'
+  };
+  db.bookingEquipment.push(be);
+  return be;
+}
+
+const getBookingEquipment = id =>
+  db.bookingEquipment.find(x => x.id === +id) || null;
+
+const getEquipmentForBooking = bookingId =>
+  db.bookingEquipment.filter(x => x.booking_id === +bookingId);
+
+const getBookingsForEquipment = equipmentId =>
+  db.bookingEquipment.filter(x => x.equipment_id === +equipmentId);
+
+/* Сколько единиц оборудования уже занято в конкретное время
+   другой активной заявкой (не «возвращено»). */
+function equipmentBookedAtTime(equipmentId, isoDateTime, excludeBookingId) {
+  return db.bookingEquipment
+    .filter(be => be.equipment_id === +equipmentId)
+    .filter(be => be.status !== 'возвращено')
+    .filter(be => be.booking_id !== +excludeBookingId)
+    .filter(be => {
+      const b = getBooking(be.booking_id);
+      return b && b.start_datetime === isoDateTime;
+    })
+    .reduce((s, be) => s + be.quantity, 0);
+}
+
+/* Доступное количество оборудования на конкретное время */
+function equipmentAvailable(equipmentId, isoDateTime, excludeBookingId) {
+  const eq = getEquipment(equipmentId);
+  if (!eq) return 0;
+  return Math.max(0, eq.total_quantity - equipmentBookedAtTime(equipmentId, isoDateTime, excludeBookingId));
+}
+
+/* Доступно прямо сейчас (для публичной страницы) — берём ближайшее время = сейчас */
+function equipmentAvailableNow(equipmentId) {
+  const nowIso = new Date().toISOString();
+  /* Считаем «занятым сейчас» всё, что с тем же днём и не возвращено */
+  const today = new Date().toDateString();
+  const busy = db.bookingEquipment
+    .filter(be => be.equipment_id === +equipmentId)
+    .filter(be => be.status !== 'возвращено')
+    .filter(be => {
+      const b = getBooking(be.booking_id);
+      if (!b) return false;
+      const d = new Date(b.start_datetime);
+      return d.toDateString() === today;
+    })
+    .reduce((s, be) => s + be.quantity, 0);
+  const eq = getEquipment(equipmentId);
+  return eq ? Math.max(0, eq.total_quantity - busy) : 0;
+}

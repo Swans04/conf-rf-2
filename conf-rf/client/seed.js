@@ -1,8 +1,10 @@
 function seed() {
   db = {
-    users: [], rooms: [], bookings: [], reviews: [], emails: [],
-    seq: { users: 0, rooms: 0, bookings: 0, reviews: 0, emails: 0 }
-  };
+  users: [], rooms: [], bookings: [], reviews: [], emails: [],
+  equipment: [], bookingEquipment: [],
+  seq: { users: 0, rooms: 0, bookings: 0, reviews: 0, emails: 0,
+         equipment: 0, bookingEquipment: 0 }
+};
 
   const r1 = createRoom({ name: 'Аудитория 101',            capacity: 120 });
   const r2 = createRoom({ name: 'Аудитория 202',            capacity: 60  });
@@ -65,7 +67,22 @@ function seed() {
     body: '<p>Ваша заявка №1 на «Конференц-зал «Кремль»» принята.</p>',
     booking_id: b1.id
   });
+  /* Контрольные вопросы для демо-пользователей */
+  setSecurityQuestion(admin.id, 'Девичья фамилия матери?', 'портнова');
+  setSecurityQuestion(u2.id,    'Кличка первого питомца?',  'мурзик');
+  setSecurityQuestion(u3.id,    'Город, в котором вы родились?', 'казань');
+    /* --- Оборудование --- */
+  const e1 = createEquipment({ name: 'Проектор Epson',       total_quantity: 3, description: 'Full HD, HDMI' });
+  const e2 = createEquipment({ name: 'Микрофон Shure',       total_quantity: 6, description: 'Беспроводной ручной' });
+  const e3 = createEquipment({ name: 'Трибуна',              total_quantity: 1, description: 'С регулировкой высоты' });
+  const e4 = createEquipment({ name: 'Флипчарт',             total_quantity: 4, description: 'Магнитный, 70×100' });
+  const e5 = createEquipment({ name: 'Ноутбук Lenovo',       total_quantity: 5, description: 'Для презентаций' });
 
+  /* --- Запросы оборудования к демо-заявкам --- */
+  createBookingEquipment({ booking_id: b1.id, equipment_id: e1.id, quantity: 1, status: 'подтверждено' });
+  createBookingEquipment({ booking_id: b1.id, equipment_id: e2.id, quantity: 2, status: 'запрошено' });
+  createBookingEquipment({ booking_id: b3.id, equipment_id: e3.id, quantity: 1, status: 'запрошено' });
+  createBookingEquipment({ booking_id: b2.id, equipment_id: e4.id, quantity: 1, status: 'возвращено' });
   saveDB();
   return db;
 }

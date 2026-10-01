@@ -191,3 +191,54 @@ function exportBookingsToCSV(bookings, filename) {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
+/* ============================================================================
+   БЕЗОПАСНОСТЬ: индикатор пароля, CAPTCHA, список контрольных вопросов
+   ============================================================================ */
+
+const SECURITY_QUESTIONS = [
+  'Девичья фамилия матери?',
+  'Кличка первого питомца?',
+  'Город, в котором вы родились?',
+  'Название первой школы?',
+  'Любимое блюдо в детстве?'
+];
+
+/* Оценка пароля: 0..4 */
+function pwdStrength(pwd) {
+  let s = 0;
+  if (pwd.length >= 8)  s++;
+  if (pwd.length >= 12) s++;
+  if (/[A-Z]/.test(pwd) && /[a-z]/.test(pwd)) s++;
+  if (/\d/.test(pwd)) s++;
+  if (/[^A-Za-z0-9]/.test(pwd)) s++;
+  return Math.min(s, 4);
+}
+
+function pwdStrengthInfo(pwd) {
+  if (!pwd) return { score: 0, label: '—', color: '#d9dfeb', width: 0 };
+  const s = pwdStrength(pwd);
+  const map = [
+    { label: 'Очень слабый', color: '#d52b1e', width: 20 },
+    { label: 'Слабый',       color: '#e0641e', width: 40 },
+    { label: 'Средний',      color: '#d98a00', width: 60 },
+    { label: 'Хороший',      color: '#4caf50', width: 80 },
+    { label: 'Надёжный',     color: '#1a9e5c', width: 100 }
+  ];
+  return { score: s, ...map[s] };
+}
+
+/* Простая математическая капча */
+function genMathCaptcha() {
+  const a = 1 + Math.floor(Math.random() * 9);
+  const b = 1 + Math.floor(Math.random() * 9);
+  return { question: `${a} + ${b} = ?`, answer: a + b };
+}
+/* Доступное количество оборудования с учётом уже запрошенного
+   в форме бронирования (для текущего выбора пользователя). */
+function equipmentAvailableForForm(equipmentId, isoDateTime, excludeBookingId, pending) {
+  const base = equipmentAvailable(equipmentId, isoDateTime, excludeBookingId);
+  const taken = (pending || [])
+    .filter(p => p.equipment_id === +equipmentId)
+    .reduce((s, p) => s + p.quantity, 0);
+  return Math.max(0, base - taken);
+}

@@ -8,6 +8,7 @@ const adminSort = { column: null, dir: 'asc' };
 function renderAll() {
   renderHome();
   renderRooms();
+  renderEquipmentPage();
   renderBookingPage();
   renderMy();
   renderReviews();
@@ -38,7 +39,9 @@ function sortBookings(list, state) {
   });
 }
 
-/* ------------------------------ ГЛАВНАЯ ------------------------------- */
+/* ============================================================
+   ГЛАВНАЯ
+   ============================================================ */
 function renderHome() {
   const u = currentUser();
   const avg = db.reviews.length
@@ -138,7 +141,9 @@ function statusBadge(st) {
   return `<span class="badge ${cls}">${esc(st)}</span>`;
 }
 
-/* ------------------------------ ПОМЕЩЕНИЯ ----------------------------- */
+/* ============================================================
+   ПОМЕЩЕНИЯ
+   ============================================================ */
 function renderRooms() {
   const u = currentUser();
   const cards = db.rooms.map(r => {
@@ -148,8 +153,8 @@ function renderRooms() {
         <h3>${esc(r.name)}</h3>
         <span class="badge b-user">ID ${r.id}</span>
       </div>
-      <div class="room-cap">👥 Вместимость: <b>${r.capacity}</b> мест</div>
-      <div class="room-cap">📋 Заявок по помещению: ${cnt}</div>
+      <div class="room-cap">Вместимость: <b>${r.capacity}</b> мест</div>
+      <div class="room-cap">Заявок по помещению: ${cnt}</div>
       <div class="row">
         <button class="btn btn-primary btn-sm" data-action="book-room" data-room="${r.id}">Забронировать</button>
         ${u && u.is_admin ? `
@@ -173,7 +178,48 @@ function renderRooms() {
   `;
 }
 
-/* ------------------------------ БРОНИРОВАНИЕ -------------------------- */
+/* ============================================================
+   ОБОРУДОВАНИЕ (публичная страница)
+   ============================================================ */
+function renderEquipmentPage() {
+  const u = currentUser();
+  const cards = db.equipment.map(e => {
+    const available = equipmentAvailableNow(e.id);
+    return `<div class="room-card">
+      <div class="row" style="justify-content:space-between">
+        <h3>${esc(e.name)}</h3>
+        <span class="badge b-user">ID ${e.id}</span>
+      </div>
+      <div class="room-cap">Всего: <b>${e.total_quantity}</b> шт.</div>
+      <div class="room-cap">Доступно сейчас: <b>${available}</b> шт.</div>
+      <div class="room-cap small muted">${esc(e.description || '')}</div>
+      ${u && u.is_admin ? `
+        <div class="row" style="margin-top:8px">
+          <button class="btn btn-ghost btn-sm" data-action="edit-equipment" data-id="${e.id}">Изменить</button>
+          <button class="btn btn-ghost btn-sm" data-action="del-equipment" data-id="${e.id}">Удалить</button>
+        </div>` : ''}
+    </div>`;
+  }).join('');
+
+  $('#page-equipment').innerHTML = `
+    <div class="row" style="justify-content:space-between;margin-bottom:16px">
+      <div>
+        <h1>Оборудование</h1>
+        <p class="muted">Доступное количество на текущий день.</p>
+      </div>
+      ${u && u.is_admin
+        ? '<button class="btn btn-red" data-action="add-equipment">+ Добавить оборудование</button>'
+        : ''}
+    </div>
+    <div class="grid c3">
+      ${cards || '<div class="empty">Оборудование не добавлено</div>'}
+    </div>
+  `;
+}
+
+/* ============================================================
+   БРОНИРОВАНИЕ
+   ============================================================ */
 function renderBookingPage() {
   const u = currentUser();
 
@@ -210,6 +256,20 @@ function renderBookingPage() {
               <option value="sbr">sbr — перевод по СБП</option>
             </select>
             <div class="err"></div>
+          </div>
+
+          <div class="field">
+            <label>Оборудование</label>
+            <div id="pendingEquipmentBox" style="margin-bottom:8px"></div>
+            <div class="row">
+              <select id="pickEquipment" style="flex:1;min-width:180px">
+                <option value="">— выберите оборудование —</option>
+                ${db.equipment.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}
+              </select>
+              <input id="pickQty" type="number" min="1" step="1" value="1" style="max-width:90px">
+              <button class="btn btn-ghost btn-sm" type="button" data-action="add-pending-equipment">+ Добавить</button>
+            </div>
+            <div class="hint">Доступное количество считается автоматически на выбранную дату.</div>
           </div>
 
           <button class="btn btn-primary" type="submit">Отправить</button>
@@ -249,10 +309,44 @@ function renderBookingPage() {
     </div>
   `;
 
+  renderPendingEquipment();
   if (typeof renderCalendarBlock === 'function') renderCalendarBlock();
 }
 
-/* ------------------------------ МОИ ЗАЯВКИ ---------------------------- */
+/* Список выбранного в форме бронирования оборудования */
+function renderPendingEquipment() {
+  const box = document.getElementById('pendingEquipmentBox');
+  if (!box) return;
+
+  const dateStr = ($('#bDate') && $('#bDate').value) || '';
+  let isoDT = null;
+  if (dateStr) {
+    const d = parseDateInput(dateStr);
+    if (d) isoDT = d.toISOString();
+  }
+
+  if (!pendingEquipment.length) {
+    box.innerHTML = '<div class="small muted">Оборудование не выбрано</div>';
+    return;
+  }
+
+  box.innerHTML = pendingEquipment.map((p, i) => {
+    const eq = getEquipment(p.equipment_id);
+    if (!eq) return '';
+    const avail = isoDT
+      ? equipmentAvailableForForm(eq.id, isoDT, null, pendingEquipment.filter((_, j) => j !== i))
+      : eq.total_quantity;
+    return `<div class="row" style="justify-content:space-between;border:1px solid var(--line);border-radius:8px;padding:6px 10px;margin-bottom:4px">
+      <span>${esc(eq.name)} — <b>${p.quantity}</b> шт. <span class="small muted">(доступно на дату: ${avail})</span></span>
+      <button class="btn btn-ghost btn-sm" type="button"
+              data-action="remove-pending-equipment" data-idx="${i}">Убрать</button>
+    </div>`;
+  }).join('');
+}
+
+/* ============================================================
+   МОИ ЗАЯВКИ
+   ============================================================ */
 function renderMy() {
   const u = currentUser();
   if (!u) {
@@ -285,7 +379,7 @@ function renderMy() {
       </div>
       <button class="btn btn-ghost btn-sm"
               data-action="export-bookings" data-source="my">
-        📥 Выгрузить в Excel
+        Выгрузить в Excel
       </button>
     </div>
 
@@ -326,6 +420,7 @@ function renderMyTable() {
             <th>Оплата</th>
             <th data-action="sort-my" data-col="st" style="cursor:pointer;user-select:none">Статус${sortArrow(mySort, 'st')}</th>
             <th>Создана</th>
+            <th>Оборудование</th>
             <th>Отзыв</th>
           </tr>
         </thead>
@@ -346,6 +441,15 @@ function renderMyTable() {
               <td class="small">${PAYMENTS[b.payment_method] || b.payment_method}</td>
               <td>${statusBadge(b.status)}</td>
               <td class="small muted">${fmtDT(b.created_at)}</td>
+              <td class="small">${(() => {
+                const eqs = (typeof getEquipmentForBooking === 'function')
+                  ? getEquipmentForBooking(b.id) : [];
+                if (!eqs.length) return '<span class="muted">—</span>';
+                return eqs.map(x => {
+                  const eq = getEquipment(x.equipment_id);
+                  return `${esc(eq ? eq.name : '—')} x${x.quantity} <span class="muted">(${x.status})</span>`;
+                }).join('<br>');
+              })()}</td>
               <td>${action}</td>
             </tr>`;
           }).join('')}
@@ -382,7 +486,9 @@ function getMyFilteredBookings() {
   return list;
 }
 
-/* ------------------------------ ОТЗЫВЫ -------------------------------- */
+/* ============================================================
+   ОТЗЫВЫ
+   ============================================================ */
 function renderReviews() {
   const list = [...db.reviews].sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
   const avg = list.length ? (list.reduce((s, r) => s + r.rating, 0) / list.length).toFixed(1) : '—';
@@ -424,7 +530,9 @@ function renderReviews() {
   if (typeof renderAvgRatingList === 'function') renderAvgRatingList();
 }
 
-/* ------------------------------ СООБЩЕНИЯ ----------------------------- */
+/* ============================================================
+   СООБЩЕНИЯ
+   ============================================================ */
 function renderMessages() {
   const u = currentUser();
   const page = $('#page-messages');
@@ -474,7 +582,9 @@ function renderMessages() {
   `;
 }
 
-/* ------------------------------ АДМИНКА ------------------------------- */
+/* ============================================================
+   ПАНЕЛЬ АДМИНИСТРАТОРА
+   ============================================================ */
 function renderAdmin() {
   const u = currentUser();
   if (!u || !u.is_admin) {
@@ -486,6 +596,7 @@ function renderAdmin() {
     return;
   }
 
+  /* --- Пользователи --- */
   const usersRows = db.users.map(x => `
     <tr>
       <td>${x.id}</td>
@@ -498,6 +609,7 @@ function renderAdmin() {
       <td><button class="btn btn-ghost btn-sm" data-action="del-user" data-id="${x.id}">Удалить</button></td>
     </tr>`).join('');
 
+  /* --- Все заявки --- */
   let allBookings = [...db.bookings];
   if (adminSort.column) allBookings = sortBookings(allBookings, adminSort);
   else allBookings.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
@@ -517,11 +629,21 @@ function renderAdmin() {
           ${STATUSES.map(s => `<option ${s === b.status ? 'selected' : ''}>${s}</option>`).join('')}
         </select>
       </td>
+      <td class="small">${(() => {
+        const eqs = (typeof getEquipmentForBooking === 'function')
+          ? getEquipmentForBooking(b.id) : [];
+        if (!eqs.length) return '<span class="muted">—</span>';
+        return eqs.map(x => {
+          const eq = getEquipment(x.equipment_id);
+          return `${esc(eq ? eq.name : '—')} x${x.quantity} <span class="muted">(${x.status})</span>`;
+        }).join('<br>');
+      })()}</td>
       <td>${rev ? `<span class="stars">${starsHTML(rev.rating)}</span>` : '<span class="muted small">—</span>'}</td>
       <td><button class="btn btn-ghost btn-sm" data-action="del-booking" data-id="${b.id}">Удалить</button></td>
     </tr>`;
   }).join('');
 
+  /* --- Помещения --- */
   const roomsRows = db.rooms.map(r => `
     <tr>
       <td>${r.id}</td>
@@ -534,13 +656,88 @@ function renderAdmin() {
       </td>
     </tr>`).join('');
 
+  /* --- Справочник оборудования --- */
+  const equipmentRows = (db.equipment || []).map(e => `
+    <tr>
+      <td>${e.id}</td>
+      <td><b>${esc(e.name)}</b></td>
+      <td>${e.total_quantity}</td>
+      <td class="small muted">${esc(e.description || '')}</td>
+      <td>
+        <button class="btn btn-ghost btn-sm" data-action="edit-equipment" data-id="${e.id}">Изменить</button>
+        <button class="btn btn-ghost btn-sm" data-action="del-equipment" data-id="${e.id}">Удалить</button>
+      </td>
+    </tr>`).join('');
+
+  /* --- Запросы оборудования --- */
+  const beRows = [...(db.bookingEquipment || [])].sort((a, b) => b.id - a.id).map(be => {
+    const b   = getBooking(be.booking_id);
+    const eq  = getEquipment(be.equipment_id);
+    const usr = b ? getUser(b.user_id) : null;
+    return `<tr>
+      <td>${be.id}</td>
+      <td>№${be.booking_id}</td>
+      <td>${esc(usr ? usr.full_name : '—')}</td>
+      <td>${esc(eq ? eq.name : '—')}</td>
+      <td>${be.quantity}</td>
+      <td class="small">${b ? fmtDT(b.start_datetime) : '—'}</td>
+      <td>
+        <select data-action="set-equipment-status" data-id="${be.id}" style="min-width:160px">
+          ${EQUIPMENT_STATUSES.map(s => `<option ${s === be.status ? 'selected' : ''}>${s}</option>`).join('')}
+        </select>
+      </td>
+    </tr>`;
+  }).join('');
+
+  /* --- Отчёт: загрузка оборудования --- */
+  const eqStats = (db.equipment || []).map(e => {
+    const list = getBookingsForEquipment(e.id).filter(x => x.status !== 'возвращено');
+    const sum = list.reduce((s, x) => s + x.quantity, 0);
+    return { eq: e, count: list.length, avg: list.length ? +(sum / list.length).toFixed(1) : 0, sum };
+  }).sort((a, b) => b.sum - a.sum);
+  const maxSum = Math.max(...eqStats.map(s => s.sum), 1);
+
+  const eqStatsRows = eqStats.map((s, i) => `
+    <tr>
+      <td><b>${esc(s.eq.name)}</b>${i < 5 ? ' <span class="badge b-adm">топ</span>' : ''}</td>
+      <td>${s.count}</td>
+      <td>${s.avg}</td>
+      <td>
+        <div class="chart-bar-bg" style="height:10px">
+          <div class="chart-bar" style="width:${(s.sum / maxSum) * 100}%"></div>
+        </div>
+      </td>
+    </tr>`).join('');
+
+  /* --- Журнал безопасности --- */
+  const securityList = [...(db.securityLog || [])].sort((a, b) =>
+    new Date(b.created_at) - new Date(a.created_at)).slice(0, 50);
+  const EV = {
+    login_success: 'Вход',
+    login_fail:    'Неудачный вход',
+    login_blocked: 'Блокировка',
+    logout:        'Выход',
+    register:      'Регистрация',
+    password_change: 'Смена пароля',
+    password_reset:  'Сброс пароля',
+    password_reset_fail: 'Неверный ответ',
+    idle_logout:   'Автовыход'
+  };
+  const securityRows = securityList.length ? securityList.map(s => `
+    <tr>
+      <td class="small">${fmtDT(s.created_at)}</td>
+      <td>${esc(s.login || '—')}</td>
+      <td>${EV[s.event] || esc(s.event)}</td>
+      <td class="small muted">${esc(JSON.stringify(s.details || {}))}</td>
+    </tr>`).join('') : '<tr><td colspan="4" class="empty">Событий пока нет</td></tr>';
+
   $('#page-admin').innerHTML = `
     <div class="row" style="justify-content:space-between;margin-bottom:16px">
       <div>
         <h1>Панель администратора</h1>
-        <p class="muted">Управление заявками, пользователями и помещениями.</p>
+        <p class="muted">Управление заявками, пользователями, помещениями и оборудованием.</p>
       </div>
-      <button class="btn btn-ghost btn-sm" data-action="reset-db">↺ Сбросить демо-данные</button>
+      <button class="btn btn-ghost btn-sm" data-action="reset-db">Сбросить демо-данные</button>
     </div>
 
     <div class="card">
@@ -549,9 +746,8 @@ function renderAdmin() {
           <h3>Все заявки</h3>
           <p class="muted small">При смене статуса пользователю отправляется письмо и уведомление в раздел «Сообщения».</p>
         </div>
-        <button class="btn btn-ghost btn-sm"
-                data-action="export-bookings" data-source="admin">
-          📥 Выгрузить в Excel
+        <button class="btn btn-ghost btn-sm" data-action="export-bookings" data-source="admin">
+          Выгрузить в Excel
         </button>
       </div>
       <div class="table-wrap">
@@ -564,10 +760,11 @@ function renderAdmin() {
               <th data-action="sort-admin" data-col="dt" style="cursor:pointer;user-select:none">Дата и время${sortArrow(adminSort, 'dt')}</th>
               <th>Оплата</th>
               <th data-action="sort-admin" data-col="st" style="cursor:pointer;user-select:none">Статус${sortArrow(adminSort, 'st')}</th>
+              <th>Оборудование</th>
               <th>Отзыв</th><th></th>
             </tr>
           </thead>
-          <tbody>${bookingsRows || '<tr><td colspan="8" class="empty">Нет заявок</td></tr>'}</tbody>
+          <tbody>${bookingsRows || '<tr><td colspan="9" class="empty">Нет заявок</td></tr>'}</tbody>
         </table>
       </div>
     </div>
@@ -595,6 +792,61 @@ function renderAdmin() {
             <tr><th>ID</th><th>Название</th><th>Вместимость</th><th>Заявок</th><th></th></tr>
           </thead>
           <tbody>${roomsRows || '<tr><td colspan="5" class="empty">Нет помещений</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Справочник оборудования</h3>
+      <div class="row" style="margin-bottom:12px">
+        <button class="btn btn-red btn-sm" data-action="add-equipment">+ Добавить оборудование</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>ID</th><th>Название</th><th>Всего</th><th>Описание</th><th></th></tr>
+          </thead>
+          <tbody>${equipmentRows || '<tr><td colspan="5" class="empty">Нет оборудования</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Запросы оборудования</h3>
+      <p class="muted small">Меняйте статус: запрошено, подтверждено, выдано, возвращено.</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>ID</th><th>Заявка</th><th>Пользователь</th><th>Оборудование</th>
+                <th>Кол-во</th><th>Дата</th><th>Статус</th></tr>
+          </thead>
+          <tbody>${beRows || '<tr><td colspan="7" class="empty">Запросов нет</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Отчёт: загрузка оборудования</h3>
+      <p class="muted small">Сколько раз использовалось каждое оборудование и среднее количество.</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Оборудование</th><th>Всего запросов</th><th>Среднее кол-во</th><th>Загрузка</th></tr>
+          </thead>
+          <tbody>${eqStatsRows || '<tr><td colspan="4" class="empty">Нет данных</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:20px">
+      <h3>Журнал безопасности</h3>
+      <p class="muted small">Последние события: входы, выходы, смена пароля, блокировки.</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Дата</th><th>Пользователь</th><th>Событие</th><th>Детали</th></tr>
+          </thead>
+          <tbody>${securityRows}</tbody>
         </table>
       </div>
     </div>
